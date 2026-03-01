@@ -3,5 +3,8 @@ pokeemerald.gba.sav
 pokeemerald.gba.sav.bak
 pokeemerald.map
 
+comm_in.txt
+comm_out.txt
+
 .vscode/
 build/

@@ -1,5 +1,5 @@
 import os
-import re
+import json
 import sys
 import time
 
@@ -21,9 +21,10 @@ def resolve_map_file_path():
 
 
 MAP_FILE = resolve_map_file_path()
-MOVES_H = os.path.join(_PROJECT_DIR, "include", "constants", "moves.h")
-SPECIES_H = os.path.join(_PROJECT_DIR, "include", "constants", "species.h")
-ITEMS_H = os.path.join(_PROJECT_DIR, "include", "constants", "items.h")
+LOOKUP_DIR = os.path.join(_SCRIPT_DIR, "lookups")
+MOVES_LOOKUP_FILE = os.path.join(LOOKUP_DIR, "moves_lookup.json")
+SPECIES_LOOKUP_FILE = os.path.join(LOOKUP_DIR, "species_lookup.json")
+ITEMS_LOOKUP_FILE = os.path.join(LOOKUP_DIR, "items_lookup.json")
 COMM_FILE_IN = os.path.join(_SCRIPT_DIR, "comm_in.txt")
 COMM_FILE_OUT = os.path.join(_SCRIPT_DIR, "comm_out.txt")
 
@@ -54,73 +55,34 @@ B_POSITION_OPPONENT_RIGHT = 3
 
 
 # ---------------------------------------------------------------------------
-# Move name lookup (parsed from include/constants/moves.h)
+# Name lookups (loaded from JSON files generated once from source headers)
 # ---------------------------------------------------------------------------
-def load_move_names():
-    """Parse MOVE_XXX defines from moves.h into {id: 'Name'} dict."""
-    names = {0: "(None)"}
+def load_lookup_names(lookup_path, fallback_zero_name):
+    """Load {id: name} mapping from JSON file with string keys."""
+    names = {0: fallback_zero_name}
+
     try:
-        with open(MOVES_H, "r") as f:
-            for line in f:
-                m = re.match(r"#define\s+MOVE_(\w+)\s+(\d+)", line)
-                if m:
-                    name = m.group(1).replace("_", " ").title()
-                    move_id = int(m.group(2))
-                    names[move_id] = name
+        with open(lookup_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        for key, value in raw.items():
+            try:
+                names[int(key)] = str(value)
+            except (TypeError, ValueError):
+                continue
     except FileNotFoundError:
-        print(f"Warning: Could not find {MOVES_H}. Move names will show as IDs.")
+        print(
+            f"Warning: Could not find {lookup_path}. "
+            "Names will show as numeric IDs."
+        )
+    except (OSError, json.JSONDecodeError):
+        print(f"Warning: Failed to read {lookup_path}. Names will show as numeric IDs.")
+
     return names
 
 
-# ---------------------------------------------------------------------------
-# Species name lookup (parsed from include/constants/species.h)
-# ---------------------------------------------------------------------------
-def load_species_names():
-    """Parse SPECIES_XXX defines from species.h into {id: 'Name'} dict."""
-    names = {0: "???"}
-    try:
-        with open(SPECIES_H, "r") as f:
-            for line in f:
-                m = re.match(r"#define\s+SPECIES_(\w+)\s+(\d+)", line)
-                if m:
-                    raw = m.group(1)
-                    species_id = int(m.group(2))
-                    if raw in ("NONE", "EGG"):
-                        continue
-                    name = raw.replace("_", " ").title()
-                    names[species_id] = name
-    except FileNotFoundError:
-        print(f"Warning: Could not find {SPECIES_H}. Species names will show as IDs.")
-    return names
-
-
-MOVE_NAMES = load_move_names()
-SPECIES_NAMES = load_species_names()
-
-
-# ---------------------------------------------------------------------------
-# Item name lookup (parsed from include/constants/items.h)
-# ---------------------------------------------------------------------------
-def load_item_names():
-    """Parse ITEM_XXX defines from items.h into {id: 'Name'} dict."""
-    names = {0: "(None)"}
-    try:
-        with open(ITEMS_H, "r") as f:
-            for line in f:
-                m = re.match(r"#define\s+ITEM_(\w+)\s+(\d+)", line)
-                if m:
-                    raw = m.group(1)
-                    item_id = int(m.group(2))
-                    if raw == "NONE":
-                        continue
-                    name = raw.replace("_", " ").title()
-                    names[item_id] = name
-    except FileNotFoundError:
-        print(f"Warning: Could not find {ITEMS_H}. Item names will show as IDs.")
-    return names
-
-
-ITEM_NAMES = load_item_names()
+MOVE_NAMES = load_lookup_names(MOVES_LOOKUP_FILE, "(None)")
+SPECIES_NAMES = load_lookup_names(SPECIES_LOOKUP_FILE, "???")
+ITEM_NAMES = load_lookup_names(ITEMS_LOOKUP_FILE, "(None)")
 
 
 def move_name(move_id):
