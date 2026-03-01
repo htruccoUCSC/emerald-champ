@@ -81,7 +81,7 @@ The Python script reads `pokeemerald.map` from the project root to locate `gExte
 1. Download and install [BizHawk](https://tasvideos.org/BizHawk).
 2. Open BizHawk and load `pokeemerald.gba`.
 3. Open the Lua Console (`Tools` → `Lua Console`).
-4. Click the folder icon and open `external_ai/bizhawk_bridge.lua`.
+4. Click the folder icon and open `bizhawk_bridge.lua`.
 5. The console prints:
 
    ```(text)
@@ -92,7 +92,6 @@ The Python script reads `pokeemerald.map` from the project root to locate `gExte
 ### 3. Run the Python script
 
 ```bash
-cd external_ai
 python external_controller.py
 ```
 
