@@ -69,13 +69,11 @@ Defined in `include/external_control.h`. The ROM populates all read-only fields 
 
 ## Setup
 
-### 1. Compile the ROM
+### 1. Setup the ROM
 
-```bash
-cd ..
-make -j$(nproc)
-```
+Download the patch from the releases page and apply it to a legitimate copy of Pokemon Emerald.
 
+Download the map file as well and place it in the root directory.
 The Python script reads `pokeemerald.map` from the project root to locate `gExternalControl` in EWRAM.
 
 ### 2. Load the ROM in BizHawk
