@@ -6,7 +6,21 @@ import time
 # Make paths robust so it can be run from root or external_ai dir
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.dirname(_SCRIPT_DIR)
-MAP_FILE = os.path.join(_PROJECT_DIR, "pokeemerald.map")
+
+
+def resolve_map_file_path():
+    """Return path to pokeemerald.map in script dir or parent dir."""
+    candidates = [
+        os.path.join(_SCRIPT_DIR, "pokeemerald.map"),
+        os.path.join(_PROJECT_DIR, "pokeemerald.map"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return candidates[0]
+
+
+MAP_FILE = resolve_map_file_path()
 MOVES_H = os.path.join(_PROJECT_DIR, "include", "constants", "moves.h")
 SPECIES_H = os.path.join(_PROJECT_DIR, "include", "constants", "species.h")
 ITEMS_H = os.path.join(_PROJECT_DIR, "include", "constants", "items.h")
@@ -125,8 +139,9 @@ def item_name(item_id):
 # File helpers
 # ---------------------------------------------------------------------------
 def get_symbol_address(symbol_name):
+    map_file = resolve_map_file_path()
     try:
-        with open(MAP_FILE, 'r') as f:
+        with open(map_file, 'r') as f:
             for line in f:
                 parts = line.strip().split()
                 if len(parts) >= 2 and parts[1] == symbol_name:
@@ -135,7 +150,10 @@ def get_symbol_address(symbol_name):
                     if 0x02000000 <= addr < 0x03000000:
                         return addr
     except FileNotFoundError:
-        print(f"Error: Could not find {MAP_FILE}. Please compile the ROM first.")
+        print(
+            "Error: Could not find pokeemerald.map in either "
+            f"{_SCRIPT_DIR} or {_PROJECT_DIR}. Please compile the ROM first."
+        )
         sys.exit(1)
 
     print(f"Error: Could not find symbol {symbol_name} in map file.")
