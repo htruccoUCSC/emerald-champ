@@ -1,5 +1,5 @@
 -- Pokemon Emerald External AI Bridge for BizHawk
--- Reads the address from comm_out.txt, then polls the game memory.
+-- Reads addresses from comm_out.txt, then polls game memory.
 
 local COMM_FILE_IN = "comm_in.txt"
 local COMM_FILE_OUT = "comm_out.txt"
@@ -8,7 +8,9 @@ local EXT_CTRL_STATE_IDLE = 0
 local EXT_CTRL_STATE_WAITING = 1
 local EXT_CTRL_STATE_DONE = 2
 
-local address = nil
+local address = nil        -- gExternalControl
+local stateAddr = nil      -- gExternalBattleState
+local BATTLE_STATE_SIZE = 456  -- must match EXT_BATTLE_STATE_SIZE in C
 
 -- Offsets within the gExternalControl struct (must match C struct layout)
 local OFFSET_STATE            = 0   -- u8
@@ -57,8 +59,17 @@ function split(s, delimiter)
     return result
 end
 
+-- Read a block of raw bytes as space-separated decimal values
+function read_byte_block(addr, size)
+    local parts = {}
+    for i = 0, size - 1 do
+        parts[#parts + 1] = tostring(memory.read_u8(addr + i, "System Bus"))
+    end
+    return table.concat(parts, " ")
+end
+
 console.log("Starting External AI Bridge...")
-console.log("Waiting for Python script to provide memory address...")
+console.log("Waiting for Python script to provide memory addresses...")
 
 while true do
     -- 1. Read address or decisions from Python
@@ -73,6 +84,14 @@ while true do
                 console.log(string.format("Registered gExternalControl at: 0x%X", address))
             else
                 console.log("Failed to parse address: " .. tostring(parts[2]))
+            end
+            -- Check for second address (gExternalBattleState)
+            if parts[3] ~= nil then
+                local hex_str2 = parts[3]:gsub("0x", "")
+                stateAddr = tonumber(hex_str2, 16)
+                if stateAddr ~= nil then
+                    console.log(string.format("Registered gExternalBattleState at: 0x%X", stateAddr))
+                end
             end
             write_file(COMM_FILE_OUT, "") -- clear to acknowledge
         end
@@ -137,9 +156,8 @@ while true do
                 for mi = 0, 3 do
                     mt[mi] = memory.read_u8(address + OFFSET_MOVE_TARGETS_TYPE + mi, "System Bus")
                 end
-                -- Format: WAITING <numMoves> <m0> <pp0> ... <numSwitches> <sw0> <sp0> ... <sw4> <sp4>
-                --         <numItems> <i0> <i1> <i2> <i3>
-                --         <isDouble> <activeBattlerId> <fieldSp0..3> <mt0..3>
+
+                -- Build the decision-data portion
                 local msg = string.format("WAITING %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d",
                     numMoves,
                     m0, pp0, m1, pp1, m2, pp2, m3, pp3,
@@ -147,6 +165,12 @@ while true do
                     numItems, items[0], items[1], items[2], items[3],
                     isDouble, activeBattlerId, fieldSp[0], fieldSp[1], fieldSp[2], fieldSp[3],
                     mt[0], mt[1], mt[2], mt[3])
+
+                -- Append full battle state if address is known
+                if stateAddr ~= nil then
+                    msg = msg .. " STATE " .. read_byte_block(stateAddr, BATTLE_STATE_SIZE)
+                end
+
                 write_file(COMM_FILE_IN, msg)
             end
         elseif state == EXT_CTRL_STATE_IDLE then
