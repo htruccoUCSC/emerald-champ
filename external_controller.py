@@ -3,6 +3,7 @@ import json
 import struct
 import sys
 import time
+import copy
 
 # Make paths robust so it can be run from root or external_ai dir
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +70,26 @@ TYPE_NAMES = {
     12: "Grass", 13: "Electric", 14: "Psychic", 15: "Ice",
     16: "Dragon", 17: "Dark", 255: "None",
 }
+#Ghost and Dark type moves were not very effective against Steel type Pokémon. in gen 3
+TYPE_CHART = {
+    "Water": {"Fire": 2, "Water": 0.5, "Electric": 1, "Grass": 0.5, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 2, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 2, "Ghost": 1, "Dragon": 0.5, "Dark": 1, "Steel": 1, "Normal": 1},
+    "Fire": {"Fire": 0.5, "Water": 0.5, "Electric": 1, "Grass": 2, "Ice": 2, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 2, "Rock": 0.5, "Ghost": 1, "Dragon": 0.5, "Dark": 1, "Steel": 2, "Normal": 1},
+    "Electric": {"Fire": 1, "Water": 2, "Electric": 0.5, "Grass": 0.5, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 0, "Flying": 2, "Psychic": 1, "Bug": 1, "Rock": 1, "Ghost": 1, "Dragon": 0.5, "Dark": 1, "Steel": 1, "Normal": 1},
+    "Grass": {"Fire": 0.5, "Water": 2, "Electric": 1, "Grass": 0.5, "Ice": 1, "Fighting": 1, "Poison": 0.5, "Ground": 2, "Flying": 0.5, "Psychic": 1, "Bug": 0.5, "Rock": 2, "Ghost": 1, "Dragon": 0.5, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Ice": {"Fire": 0.5, "Water": 0.5, "Electric": 1, "Grass": 2, "Ice": 0.5, "Fighting": 1, "Poison": 1, "Ground": 2, "Flying": 2, "Psychic": 1, "Bug": 1, "Rock": 1, "Ghost": 1, "Dragon": 2, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Fighting": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 2, "Fighting": 1, "Poison": 0.5, "Ground": 1, "Flying": 0.5, "Psychic": 0.5, "Bug": 0.5, "Rock": 2, "Ghost": 0, "Dragon": 1, "Dark": 2, "Steel": 2, "Normal": 2},
+    "Poison": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 2, "Ice": 1, "Fighting": 1, "Poison": 0.5, "Ground": 0.5, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 0.5, "Ghost": 0.5, "Dragon": 1, "Dark": 1, "Steel": 0, "Normal": 1},
+    "Ground": {"Fire": 2, "Water": 1, "Electric": 2, "Grass": 0.5, "Ice": 1, "Fighting": 1, "Poison": 2, "Ground": 1, "Flying": 0, "Psychic": 1, "Bug": 0.5, "Rock": 2, "Ghost": 1, "Dragon": 1, "Dark": 1, "Steel": 2, "Normal": 1},
+    "Flying": {"Fire": 1, "Water": 1, "Electric": 0.5, "Grass": 2, "Ice": 1, "Fighting": 2, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 2, "Rock": 0.5, "Ghost": 1, "Dragon": 1, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Psychic": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 2, "Poison": 2, "Ground": 1, "Flying": 1, "Psychic": 0.5, "Bug": 1, "Rock": 1, "Ghost": 1, "Dragon": 1, "Dark": 0, "Steel": 0.5, "Normal": 1},
+    "Bug": {"Fire": 0.5, "Water": 1, "Electric": 1, "Grass": 2, "Ice": 1, "Fighting": 0.5, "Poison": 0.5, "Ground": 1, "Flying": 0.5, "Psychic": 2, "Bug": 1, "Rock": 1, "Ghost": 0.5, "Dragon": 1, "Dark": 2, "Steel": 0.5, "Normal": 1},
+    "Rock": {"Fire": 2, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 2, "Fighting": 0.5, "Poison": 1, "Ground": 0.5, "Flying": 2, "Psychic": 1, "Bug": 2, "Rock": 1, "Ghost": 1, "Dragon": 1, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Ghost": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 2, "Bug": 1, "Rock": 1, "Ghost": 2, "Dragon": 1, "Dark": 0.5, "Steel": 0.5, "Normal": 0},
+    "Dragon": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 1, "Ghost": 1, "Dragon": 2, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Dark": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 0.5, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 2, "Bug": 1, "Rock": 1, "Ghost": 2, "Dragon": 1, "Dark": 0.5, "Steel": 0.5, "Normal": 1},
+    "Steel": {"Fire": 0.5, "Water": 0.5, "Electric": 0.5, "Grass": 1, "Ice": 2, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 2, "Ghost": 1, "Dragon": 1, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Normal": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 0.5, "Ghost": 0, "Dragon": 1, "Dark": 1, "Steel": 0.5, "Normal": 1}
+}
 
 # Weather bits (from include/constants/battle.h)
 B_WEATHER_RAIN_TEMPORARY      = 1 << 0
@@ -91,25 +112,47 @@ STAT_STAGE_NAMES = ["HP", "Atk", "Def", "Spd", "SpAtk", "SpDef", "Acc", "Eva"]
 # ---------------------------------------------------------------------------
 # Name lookups (loaded from JSON files generated from source headers)
 # ---------------------------------------------------------------------------
-def load_lookup_names(lookup_path, fallback_zero_name):
+def load_lookup_names(lookup_path, fallback_zero_name=None):
     """Load {id: name} mapping from a JSON file with string/int keys."""
-    names = {0: fallback_zero_name}
+    data = {}
+    if fallback_zero_name is not None:
+        data[0] = {"name": fallback_zero_name}
+
     try:
         with open(lookup_path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         for key, value in raw.items():
             try:
-                names[int(key)] = str(value)
+                idx = int(key)
+                if isinstance(value, str):
+                    data[idx] = {"name": value}
+                elif isinstance(value, dict):
+                    data[idx] = value
             except (TypeError, ValueError):
                 continue
     except FileNotFoundError:
-        print(
-            f"Warning: Could not find {lookup_path}. "
-            "Names will show as numeric IDs."
-        )
+        print(f"Warning: Could not find {lookup_path}")
     except (OSError, json.JSONDecodeError):
-        print(f"Warning: Failed to read {lookup_path}. Names will show as numeric IDs.")
-    return names
+        print(f"Warning: Failed to read {lookup_path}")
+    return data
+    
+    ###names = {0: fallback_zero_name}
+    ###try:
+    ###    with open(lookup_path, "r", encoding="utf-8") as f:
+    ###        raw = json.load(f)
+    ###    for key, value in raw.items():
+    ###        try:
+    ###            names[int(key)] = str(value)
+    ###        except (TypeError, ValueError):
+    ###            continue
+    ###except FileNotFoundError:
+    ###    print(
+    ###        f"Warning: Could not find {lookup_path}. "
+    ###        "Names will show as numeric IDs."
+    ###    )
+    ###except (OSError, json.JSONDecodeError):
+    ###    print(f"Warning: Failed to read {lookup_path}. Names will show as numeric IDs.")
+    ###return names
 
 
 MOVE_NAMES = load_lookup_names(MOVES_LOOKUP_FILE, "(None)")
@@ -120,8 +163,17 @@ ITEM_NAMES[0] = "(None)"
 
 
 def move_name(move_id):
-    return MOVE_NAMES.get(move_id, f"Move#{move_id}")
+    #return MOVE_NAMES.get(move_id, f"Move#{move_id}")
+    move = MOVE_NAMES.get(move_id)
+    if not move:
+        return str(move_id)
+    return move["name"]
 
+def move_data(move_id):
+    return MOVE_NAMES.get(move_id)
+
+def type_effectiveness(move_type, target_type):
+    return TYPE_CHART.get(move_type, {}).get(target_type, 1)
 
 def species_name(species_id):
     return SPECIES_NAMES.get(species_id, f"Species#{species_id}")
@@ -392,7 +444,7 @@ def display_battle_state(bs):
         types = type_name(a["type1"])
         if a["type2"] != a["type1"]:
             types += "/" + type_name(a["type2"])
-
+       
         print(f"  {slot_label} {species_name(a['species'])} Lv{a['level']}  "
               f"HP: {a['hp']}/{a['maxHp']}  {types}{status_display}")
         print(f"         Atk:{a['attack']} Def:{a['defense']} SpA:{a['spAttack']} "
@@ -568,114 +620,294 @@ def prompt_target(info):
 # Prompt the user with only valid choices
 # ---------------------------------------------------------------------------
 def prompt_action(info):
-    """Display valid actions & sub-choices. Returns (action, index, target)."""
+    state = info["battle_state"]
+
+    score, best_action = minimax(info, state, depth = 3)
+
+    if best_action:
+        action, index, target = best_action
+        state["previous_move"] = state["lastUsedMove"][1]
+        print(f"AI chose action: {action}, index: {index}, target: {target}")
+        return action, index, target
+    
+#def prompt_action(info):
+#
+#    """Display valid actions & sub-choices. Returns (action, index, target)."""
+#    valid_move_slots = [
+#        i for i, (mid, pp) in enumerate(info["moves"])
+#        if mid != 0 and pp > 0
+#    ]
+#    # Available trainer item slots (non-zero item IDs)
+#    valid_item_slots = [
+#        i for i, item_id in enumerate(info["trainer_items"])
+#        if item_id != 0
+#    ]
+#    has_moves    = len(valid_move_slots) > 0
+#    has_switches = info["num_switches"] > 0
+#    has_items    = len(valid_item_slots) > 0
+#
+#    # Build menu of top-level actions
+#    options = []
+#    if has_moves:
+#        options.append(EXT_CTRL_ACTION_MOVE)
+#    if has_items:
+#        options.append(EXT_CTRL_ACTION_ITEM)
+#    if has_switches:
+#        options.append(EXT_CTRL_ACTION_SWITCH)
+#
+#    #ava code
+#    
+#    #call minimax and evaluate function here to get best move, item, or switch choice
+#    #then return that choice instead of prompting the user
+#
+#    #end ava code
+#    # If nothing is available (shouldn't normally happen), default to Struggle
+#    if not options:
+#        print("  No valid actions available — forcing Move 0 (Struggle).")
+#        return (EXT_CTRL_ACTION_MOVE, 0, 0)
+#
+#    # If only switch is available (forced switch after faint), skip the menu
+#    if options == [EXT_CTRL_ACTION_SWITCH]:
+#        print("\n--- A Pokemon fainted! Choose a replacement ---")
+#        action = EXT_CTRL_ACTION_SWITCH
+#    else:
+#        print("\n--- Opponent is waiting for a decision ---")
+#        print("Available actions:")
+#        action_labels = {
+#            EXT_CTRL_ACTION_MOVE:   "Use Move",
+#            EXT_CTRL_ACTION_ITEM:   "Use Item",
+#            EXT_CTRL_ACTION_SWITCH: "Switch Pokemon",
+#        }
+#        for opt in options:
+#            print(f"  {opt}: {action_labels[opt]}")
+#
+#        action = None
+#        while action not in options:
+#            try:
+#                action = int(input(f"Select Action ({'/'.join(str(o) for o in options)}): "))
+#                if action not in options:
+#                    print(f"Invalid. Choose from: {options}")
+#            except ValueError:
+#                print("Invalid input.")
+#
+#    index = 0
+#    target = 0
+#
+#    if action == EXT_CTRL_ACTION_MOVE:
+#        print("Available moves:")
+#        for slot in valid_move_slots:
+#            mid, pp = info["moves"][slot]
+#            print(f"  {slot}: {move_name(mid)}  (PP: {pp})")
+#
+#        chosen = None
+#        while chosen not in valid_move_slots:
+#            try:
+#                chosen = int(input(f"Select Move Slot ({'/'.join(str(s) for s in valid_move_slots)}): "))
+#                if chosen not in valid_move_slots:
+#                    print(f"Invalid. Choose from: {valid_move_slots}")
+#            except ValueError:
+#                print("Invalid input.")
+#        index = chosen
+#        # Targeting: in double battles, single-target moves need a target prompt
+#        if info["is_double"] and info["move_targets"][chosen] == MOVE_TARGET_SELECTED:
+#            target = prompt_target(info)
+#        else:
+#            target = 0
+#
+#    elif action == EXT_CTRL_ACTION_ITEM:
+#        print("Available items:")
+#        for slot in valid_item_slots:
+#            print(f"  {slot}: {item_name(info['trainer_items'][slot])}")
+#
+#        chosen = None
+#        while chosen not in valid_item_slots:
+#            try:
+#                chosen = int(input(f"Select Item Slot ({'/'.join(str(s) for s in valid_item_slots)}): "))
+#                if chosen not in valid_item_slots:
+#                    print(f"Invalid. Choose from: {valid_item_slots}")
+#            except ValueError:
+#                print("Invalid input.")
+#        index = chosen
+#
+#    elif action == EXT_CTRL_ACTION_SWITCH:
+#        print("Available Pokemon to switch to:")
+#        for j, slot in enumerate(info["switch_slots"]):
+#            sp_id = info["switch_species"][j] if j < len(info["switch_species"]) else 0
+#            print(f"  {slot}: {species_name(sp_id)}")
+#        chosen = None
+#        while chosen not in info["switch_slots"]:
+#            try:
+#                chosen = int(input(f"Select Party Slot ({'/'.join(str(s) for s in info['switch_slots'])}): "))
+#                if chosen not in info["switch_slots"]:
+#                    print(f"Invalid. Choose from: {info['switch_slots']}")
+#            except ValueError:
+#                print("Invalid input.")
+#        index = chosen
+#
+#    return (action, index, target)
+
+def generate_actions(info):
+    actions = []
     valid_move_slots = [
         i for i, (mid, pp) in enumerate(info["moves"])
         if mid != 0 and pp > 0
     ]
-    # Available trainer item slots (non-zero item IDs)
     valid_item_slots = [
-        i for i, item_id in enumerate(info["trainer_items"])
-        if item_id != 0
+        i for i, item in enumerate(info["trainer_items"])
+        if item != 0
     ]
-    has_moves    = len(valid_move_slots) > 0
-    has_switches = info["num_switches"] > 0
-    has_items    = len(valid_item_slots) > 0
 
-    # Build menu of top-level actions
-    options = []
-    if has_moves:
-        options.append(EXT_CTRL_ACTION_MOVE)
-    if has_items:
-        options.append(EXT_CTRL_ACTION_ITEM)
-    if has_switches:
-        options.append(EXT_CTRL_ACTION_SWITCH)
-
-    # If nothing is available (shouldn't normally happen), default to Struggle
-    if not options:
-        print("  No valid actions available — forcing Move 0 (Struggle).")
-        return (EXT_CTRL_ACTION_MOVE, 0, 0)
-
-    # If only switch is available (forced switch after faint), skip the menu
-    if options == [EXT_CTRL_ACTION_SWITCH]:
-        print("\n--- A Pokemon fainted! Choose a replacement ---")
-        action = EXT_CTRL_ACTION_SWITCH
-    else:
-        print("\n--- Opponent is waiting for a decision ---")
-        print("Available actions:")
-        action_labels = {
-            EXT_CTRL_ACTION_MOVE:   "Use Move",
-            EXT_CTRL_ACTION_ITEM:   "Use Item",
-            EXT_CTRL_ACTION_SWITCH: "Switch Pokemon",
-        }
-        for opt in options:
-            print(f"  {opt}: {action_labels[opt]}")
-
-        action = None
-        while action not in options:
-            try:
-                action = int(input(f"Select Action ({'/'.join(str(o) for o in options)}): "))
-                if action not in options:
-                    print(f"Invalid. Choose from: {options}")
-            except ValueError:
-                print("Invalid input.")
-
-    index = 0
-    target = 0
-
-    if action == EXT_CTRL_ACTION_MOVE:
-        print("Available moves:")
-        for slot in valid_move_slots:
-            mid, pp = info["moves"][slot]
-            print(f"  {slot}: {move_name(mid)}  (PP: {pp})")
-
-        chosen = None
-        while chosen not in valid_move_slots:
-            try:
-                chosen = int(input(f"Select Move Slot ({'/'.join(str(s) for s in valid_move_slots)}): "))
-                if chosen not in valid_move_slots:
-                    print(f"Invalid. Choose from: {valid_move_slots}")
-            except ValueError:
-                print("Invalid input.")
-        index = chosen
-        # Targeting: in double battles, single-target moves need a target prompt
-        if info["is_double"] and info["move_targets"][chosen] == MOVE_TARGET_SELECTED:
-            target = prompt_target(info)
+    for slot in valid_move_slots:
+        if info["is_double"] and info["move_targets"][slot] == MOVE_TARGET_SELECTED:
+            for t in get_valid_targets(info):
+                actions.append((EXT_CTRL_ACTION_MOVE, slot, t))
         else:
-            target = 0
+            actions.append((EXT_CTRL_ACTION_MOVE, slot, 0))
 
-    elif action == EXT_CTRL_ACTION_ITEM:
-        print("Available items:")
-        for slot in valid_item_slots:
-            print(f"  {slot}: {item_name(info['trainer_items'][slot])}")
+    for slot in valid_item_slots:
+        actions.append((EXT_CTRL_ACTION_ITEM, slot, 0))
 
-        chosen = None
-        while chosen not in valid_item_slots:
-            try:
-                chosen = int(input(f"Select Item Slot ({'/'.join(str(s) for s in valid_item_slots)}): "))
-                if chosen not in valid_item_slots:
-                    print(f"Invalid. Choose from: {valid_item_slots}")
-            except ValueError:
-                print("Invalid input.")
-        index = chosen
+    for slot in info["switch_slots"]:
+        actions.append((EXT_CTRL_ACTION_SWITCH, slot, 0))
 
-    elif action == EXT_CTRL_ACTION_SWITCH:
-        print("Available Pokemon to switch to:")
-        for j, slot in enumerate(info["switch_slots"]):
-            sp_id = info["switch_species"][j] if j < len(info["switch_species"]) else 0
-            print(f"  {slot}: {species_name(sp_id)}")
-        chosen = None
-        while chosen not in info["switch_slots"]:
-            try:
-                chosen = int(input(f"Select Party Slot ({'/'.join(str(s) for s in info['switch_slots'])}): "))
-                if chosen not in info["switch_slots"]:
-                    print(f"Invalid. Choose from: {info['switch_slots']}")
-            except ValueError:
-                print("Invalid input.")
-        index = chosen
+    return actions
 
-    return (action, index, target)
+def evaluate(state):
+    score = 0
 
+    player = state["active"][0]
+    #oponent is AI
+    opponent = state["active"][1]
+
+    #these are currently correct
+    #print("player: ", player)
+    #print("opponent: ", opponent)
+
+    if opponent["hp"] <= 0:
+        print("1")
+        score -= 200
+    elif opponent["maxHp"] > 0:
+        #print("2")
+        score += (1 - opponent["hp"] / opponent["maxHp"]) * 100
+        print("score after 2: ",score)
+    
+    if player["hp"] <= 0:
+        print("3")
+        score += 200
+    elif player["maxHp"] > 0:
+        #print("4")
+        score += (player["hp"] / player["maxHp"]) * 50
+        print("score after 4: ", score)
+    print("lastmove: ", state["lastUsedMove"][1])
+    #print("state['last_move'] ", state["last_move"])
+
+    last_real_move = state.get("lastUsedMove", [None, None])[1]
+    simulated_move = state.get("last_move")
+    #if state["lastUsedMove"][1] == state["last_move"]:
+    if last_real_move == simulated_move:
+        print("did this work")
+        score -= 20
+
+    print("score in evaluate: ", score)
+    return score
+
+def simulate(state, action):
+    new_state = copy.deepcopy(state)
+    act, idx, target = action
+    if act == EXT_CTRL_ACTION_MOVE:
+            print("action for move is chosen: ", act)
+            #attacker is always 1 (AI being controlled)
+            attacker = new_state["active"][1]
+            #defender is always target (or 0) bc that is player
+            defender = new_state["active"][target]
+
+            #AI is attacker,
+            #Player is Defender
+            #print("defender: ", defender)
+            #print("attacker: ", attacker)
+            #get each moveID from AI
+            move_id = attacker["moves"][idx]
+            #estimate how much that move will do against player
+            damage = estimate_damage(attacker, defender, move_id)
+
+            defender["hp"] = max(0, defender["hp"] - damage)
+            new_state["last_move"] = move_id
+            print("new_state['ya whatever tf']: ",new_state["last_move"] )
+            print("here is what defender hp is after dmg calc: ", defender["hp"])
+    return new_state
+
+def estimate_damage(attacker, defender, move_id):
+    print("move_id: ",move_id)
+    mv = move_data(move_id)
+
+    if not mv:
+        return 0
+    power = mv["power"]
+    print("power: ", power)
+    if power == 0:
+        return 0
+    level = attacker["level"]
+
+    if mv["category"] == "physical":
+        attack = attacker["attack"]
+        defense = defender["defense"]
+    else:
+        attack = attacker["spAttack"]
+        defense = defender["spDefense"]
+
+    damage = ((((2 * level + 10) / 250) * power * (attack / defense)) / 50) + 2
+    print("type, attacker type1, attacker type2: ", mv["type"], type_name(defender["type1"]), type_name(defender["type2"]))
+    stab = 1
+    #STAB damage
+    if mv["type"] == type_name(attacker["type1"]) or mv["type"] == type_name(attacker["type2"]):
+        print("hello my damge is 1.5")
+        stab *= 1.5
+    #mv["type"] is all of AI move's types
+    #if mv["type"] == defender["type1"] ex: if ghost == ghost
+    #check type effectiveness
+    #update dmg according to type effectiveness
+    #if mv["type"] != defender["type1"] or type 2
+    #check type effectiveness
+    #update dmg according to type effectiveness
+
+
+    multiplier = type_effectiveness(mv["type"], type_name(defender["type1"]))
+    print("Multiplier 1: ", multiplier)
+
+    if defender["type2"] != defender["type1"]:
+        print(mv["type"], type_name(defender["type2"]))
+        print("type_effectiveness", type_effectiveness(mv["type"], type_name(defender["type2"])))
+        multiplier *= type_effectiveness(mv["type"], type_name(defender["type2"]))
+        print("Multiplier 2: ", multiplier)
+
+    #damage does not take into account the pokemon critical hits
+    #or the randomness inputed
+    damage = damage * stab * multiplier
+    
+    print("here is was damage is after calculation: ", damage)
+    return int(damage)
+
+def minimax(info, state, depth):
+    print("depth: ",depth)
+    if depth == 0:
+        return evaluate(state), None
+
+    best_score = float("-inf")
+    best_action = None
+
+    actions = generate_actions(info)
+
+    for action in actions:
+        print("action: ", action)
+        new_state = simulate(state, action)
+
+        score, _ = minimax(info, new_state, depth - 1)
+
+        if score > best_score:
+            best_score = score
+            best_action = action
+    print("score: ",best_score)
+    return best_score, best_action
 
 def main():
     print("Pokemon Emerald External AI Controller")
