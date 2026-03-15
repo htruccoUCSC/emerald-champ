@@ -5,7 +5,7 @@ import sys
 import time
 import copy
 import re
-from dotenv import load_dotenv, dotenv_values
+from dotenv import load_dotenv
 load_dotenv()
 from google import genai
 from google.genai import types
@@ -630,13 +630,230 @@ def prompt_target(info):
 def prompt_action(info):
     state = info["battle_state"]
 
-    score, best_action = minimax(info, state, depth = 2, maximizing=True)
+    # Forced switch case --> if AI active pokemon is dead must switch
+    if state and state["active"][AI_BATTLER_ID].get("hp", 0) <= 0:
+        forced_switches = []
+        for slot in info.get("switch_slots", []):
+            if 0 <= slot < len(state.get("party", [])) and _is_alive(state["party"][slot]):
+                forced_switches.append(slot)
+
+        if forced_switches:
+            # Choose the healthiest available replacement
+            best_slot = max(
+                forced_switches,
+                key=lambda s: (
+                    state["party"][s]["hp"] / state["party"][s]["maxHp"]
+                    if state["party"][s].get("maxHp", 0) > 0
+                    else 0
+                ),
+            )
+            print(f"AI forced switch chose party slot: {best_slot}")
+            return (EXT_CTRL_ACTION_SWITCH, best_slot, 0)
+
+    score, best_action = choose_action_alpha_beta(info, state, depth=3)
 
     if best_action:
         action, index, target = best_action
         state["previous_move"] = state["lastUsedMove"][1]
         print(f"AI chose action: {action}, index: {index}, target: {target}")
         return action, index, target
+
+    # Fallback if search returns no legal action --> prefers legal moves, then items, then switches
+    if state:
+        fallback_switches = []
+        for slot in info.get("switch_slots", []):
+            if 0 <= slot < len(state.get("party", [])) and _is_alive(state["party"][slot]):
+                fallback_switches.append(slot)
+        if fallback_switches:
+            return (EXT_CTRL_ACTION_SWITCH, fallback_switches[0], 0)
+
+    return (EXT_CTRL_ACTION_MOVE, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# Improved search (alpha-beta minimax)
+# ---------------------------------------------------------------------------
+# Change summary:
+# 1) Uses alternating turns (AI maximizes, player minimizes)
+# 2) Generates actions from the current simulated state, not just initial info
+# 3) Simulates move/item/switch for AI, and move for player
+# 4) Uses alpha-beta pruning to reduce explored branches
+AI_BATTLER_ID = 1
+PLAYER_BATTLER_ID = 0
+
+
+def _is_alive(mon):
+    return mon.get("species", 0) != 0 and mon.get("hp", 0) > 0
+
+
+def _get_enemy_side(side):
+    return PLAYER_BATTLER_ID if side == AI_BATTLER_ID else AI_BATTLER_ID
+
+
+def evaluate_state(state):
+    """Heuristic score where higher is better for AI (active battler index 1)."""
+    ai = state["active"][AI_BATTLER_ID]
+    player = state["active"][PLAYER_BATTLER_ID]
+
+    ai_hp_ratio = (ai["hp"] / ai["maxHp"]) if ai.get("maxHp", 0) > 0 else 0
+    player_hp_ratio = (player["hp"] / player["maxHp"]) if player.get("maxHp", 0) > 0 else 0
+
+    # Reward lowering player HP and preserving AI HP
+    score = (1.0 - player_hp_ratio) * 140.0
+    score -= (1.0 - ai_hp_ratio) * 120.0
+
+    # Strong terminal incentives
+    if player.get("hp", 0) <= 0:
+        score += 1000
+    if ai.get("hp", 0) <= 0:
+        score -= 1000
+
+    # Small repeat move penalty to reduce loops
+    if state.get("last_move") == state.get("lastUsedMove", [None, None])[AI_BATTLER_ID]:
+        score -= 10
+
+    return score
+
+
+def generate_actions_for_side(info, state, side):
+    """Generate legal-ish actions for the acting side from the current state"""
+    actions = []
+    actor = state["active"][side]
+
+    # If AI active pokemon has fainted --> switch
+    if not _is_alive(actor):
+        if side == AI_BATTLER_ID:
+            for slot in info.get("switch_slots", []):
+                if 0 <= slot < len(state.get("party", [])) and _is_alive(state["party"][slot]):
+                    actions.append((EXT_CTRL_ACTION_SWITCH, slot, 0))
+        return actions
+
+    enemy_side = _get_enemy_side(side)
+    enemy_alive = _is_alive(state["active"][enemy_side])
+
+    # Moves from simulated state (keeps PP and move list up to date)
+    for slot, move_id in enumerate(actor.get("moves", [])):
+        pp = actor.get("pp", [0, 0, 0, 0])[slot] if slot < 4 else 0
+        if move_id == 0 or pp <= 0:
+            continue
+
+        # In singles --> target the opposing active by default
+        if enemy_alive:
+            actions.append((EXT_CTRL_ACTION_MOVE, slot, enemy_side))
+
+    # AI only extras based on provided decision info
+    if side == AI_BATTLER_ID:
+        for slot, item_id in enumerate(info.get("trainer_items", [])):
+            if item_id != 0:
+                actions.append((EXT_CTRL_ACTION_ITEM, slot, 0))
+
+        for slot in info.get("switch_slots", []):
+            if 0 <= slot < len(state.get("party", [])):
+                party_mon = state["party"][slot]
+                if _is_alive(party_mon):
+                    actions.append((EXT_CTRL_ACTION_SWITCH, slot, 0))
+
+    return actions
+
+
+def simulate_action_for_side(state, info, action, side):
+    """Apply one simplified action transition for the acting side"""
+    new_state = copy.deepcopy(state)
+    act, idx, target = action
+
+    if act == EXT_CTRL_ACTION_MOVE:
+        attacker = new_state["active"][side]
+        enemy_side = _get_enemy_side(side)
+
+        if not _is_alive(attacker):
+            return new_state
+
+        # Use requested target when valid --> otherwise default to enemy active
+        defender_idx = target if 0 <= target < len(new_state["active"]) else enemy_side
+        if not _is_alive(new_state["active"][defender_idx]):
+            defender_idx = enemy_side
+        defender = new_state["active"][defender_idx]
+
+        if idx < 0 or idx >= 4:
+            return new_state
+
+        move_id = attacker["moves"][idx]
+        if move_id == 0 or attacker["pp"][idx] <= 0:
+            return new_state
+
+        damage = estimate_damage(attacker, defender, move_id)
+        defender["hp"] = max(0, defender["hp"] - damage)
+        attacker["pp"][idx] = max(0, attacker["pp"][idx] - 1)
+
+        if side == AI_BATTLER_ID:
+            new_state["last_move"] = move_id
+
+    elif act == EXT_CTRL_ACTION_ITEM and side == AI_BATTLER_ID:
+        ai = new_state["active"][AI_BATTLER_ID]
+        if _is_alive(ai):
+            ai["hp"] = min(ai["maxHp"], ai["hp"] + 40)
+
+    elif act == EXT_CTRL_ACTION_SWITCH and side == AI_BATTLER_ID:
+        # Swap active AI pokemon with selected party slot
+        if 0 <= idx < len(new_state.get("party", [])):
+            party_mon = new_state["party"][idx]
+            if _is_alive(party_mon):
+                old_active = new_state["active"][AI_BATTLER_ID]
+                new_state["active"][AI_BATTLER_ID] = party_mon
+                new_state["party"][idx] = old_active
+
+    return new_state
+
+
+def _alpha_beta(info, state, depth, side, alpha, beta):
+    player_fainted = state["active"][PLAYER_BATTLER_ID].get("hp", 0) <= 0
+
+    if depth == 0 or player_fainted:
+        return evaluate_state(state), None
+
+    actions = generate_actions_for_side(info, state, side)
+    if not actions:
+        return evaluate_state(state), None
+
+    next_side = _get_enemy_side(side)
+
+    if side == AI_BATTLER_ID:
+        best_score = float("-inf")
+        best_action = None
+        for action in actions:
+            new_state = simulate_action_for_side(state, info, action, side)
+            score, _ = _alpha_beta(info, new_state, depth - 1, next_side, alpha, beta)
+            if score > best_score:
+                best_score = score
+                best_action = action
+            alpha = max(alpha, best_score)
+            if beta <= alpha:
+                break
+        return best_score, best_action
+
+    best_score = float("inf")
+    best_action = None
+    for action in actions:
+        new_state = simulate_action_for_side(state, info, action, side)
+        score, _ = _alpha_beta(info, new_state, depth - 1, next_side, alpha, beta)
+        if score < best_score:
+            best_score = score
+            best_action = action
+        beta = min(beta, best_score)
+        if beta <= alpha:
+            break
+    return best_score, best_action
+
+
+def choose_action_alpha_beta(info, state, depth=3):
+    return _alpha_beta(
+        info,
+        state,
+        depth,
+        AI_BATTLER_ID,
+        float("-inf"),
+        float("inf"),
+    )
 
 def generate_actions(info):
     actions = []
