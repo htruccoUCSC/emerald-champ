@@ -5,7 +5,7 @@ import sys
 import time
 import copy
 import re
-from dotenv import load_dotenv, dotenv_values
+from dotenv import load_dotenv
 load_dotenv()
 from google import genai
 from google.genai import types
@@ -630,10 +630,26 @@ def prompt_target(info):
 def prompt_action(info):
     state = info["battle_state"]
 
-    # Old search call kept for reference:
-    # score, best_action = minimax(info, state, depth = 3)
+    # Forced switch case --> if AI active pokemon is dead must switch
+    if state and state["active"][AI_BATTLER_ID].get("hp", 0) <= 0:
+        forced_switches = []
+        for slot in info.get("switch_slots", []):
+            if 0 <= slot < len(state.get("party", [])) and _is_alive(state["party"][slot]):
+                forced_switches.append(slot)
 
-    # New search: alpha-beta pruning with alternating turns (AI max, player min).
+        if forced_switches:
+            # Choose the healthiest available replacement
+            best_slot = max(
+                forced_switches,
+                key=lambda s: (
+                    state["party"][s]["hp"] / state["party"][s]["maxHp"]
+                    if state["party"][s].get("maxHp", 0) > 0
+                    else 0
+                ),
+            )
+            print(f"AI forced switch chose party slot: {best_slot}")
+            return (EXT_CTRL_ACTION_SWITCH, best_slot, 0)
+
     score, best_action = choose_action_alpha_beta(info, state, depth=3)
 
     if best_action:
@@ -642,7 +658,15 @@ def prompt_action(info):
         print(f"AI chose action: {action}, index: {index}, target: {target}")
         return action, index, target
 
-    # Fallback if search returns no legal action.
+    # Fallback if search returns no legal action --> prefers legal moves, then items, then switches
+    if state:
+        fallback_switches = []
+        for slot in info.get("switch_slots", []):
+            if 0 <= slot < len(state.get("party", [])) and _is_alive(state["party"][slot]):
+                fallback_switches.append(slot)
+        if fallback_switches:
+            return (EXT_CTRL_ACTION_SWITCH, fallback_switches[0], 0)
+
     return (EXT_CTRL_ACTION_MOVE, 0, 0)
 
 
@@ -650,10 +674,10 @@ def prompt_action(info):
 # Improved search (alpha-beta minimax)
 # ---------------------------------------------------------------------------
 # Change summary:
-# 1) Uses alternating turns (AI maximizes, player minimizes).
-# 2) Generates actions from the current simulated state, not just initial info.
-# 3) Simulates move/item/switch for AI, and move for player.
-# 4) Uses alpha-beta pruning to reduce explored branches.
+# 1) Uses alternating turns (AI maximizes, player minimizes)
+# 2) Generates actions from the current simulated state, not just initial info
+# 3) Simulates move/item/switch for AI, and move for player
+# 4) Uses alpha-beta pruning to reduce explored branches
 AI_BATTLER_ID = 1
 PLAYER_BATTLER_ID = 0
 
@@ -674,17 +698,17 @@ def evaluate_state(state):
     ai_hp_ratio = (ai["hp"] / ai["maxHp"]) if ai.get("maxHp", 0) > 0 else 0
     player_hp_ratio = (player["hp"] / player["maxHp"]) if player.get("maxHp", 0) > 0 else 0
 
-    # Reward lowering player HP and preserving AI HP.
+    # Reward lowering player HP and preserving AI HP
     score = (1.0 - player_hp_ratio) * 140.0
     score -= (1.0 - ai_hp_ratio) * 120.0
 
-    # Strong terminal incentives.
+    # Strong terminal incentives
     if player.get("hp", 0) <= 0:
         score += 1000
     if ai.get("hp", 0) <= 0:
         score -= 1000
 
-    # Small repeat-move penalty to reduce loops.
+    # Small repeat move penalty to reduce loops
     if state.get("last_move") == state.get("lastUsedMove", [None, None])[AI_BATTLER_ID]:
         score -= 10
 
@@ -692,26 +716,32 @@ def evaluate_state(state):
 
 
 def generate_actions_for_side(info, state, side):
-    """Generate legal-ish actions for the acting side from the current state."""
+    """Generate legal-ish actions for the acting side from the current state"""
     actions = []
     actor = state["active"][side]
+
+    # If AI active pokemon has fainted --> switch
     if not _is_alive(actor):
+        if side == AI_BATTLER_ID:
+            for slot in info.get("switch_slots", []):
+                if 0 <= slot < len(state.get("party", [])) and _is_alive(state["party"][slot]):
+                    actions.append((EXT_CTRL_ACTION_SWITCH, slot, 0))
         return actions
 
     enemy_side = _get_enemy_side(side)
     enemy_alive = _is_alive(state["active"][enemy_side])
 
-    # Moves from simulated state (keeps PP and move list up to date).
+    # Moves from simulated state (keeps PP and move list up to date)
     for slot, move_id in enumerate(actor.get("moves", [])):
         pp = actor.get("pp", [0, 0, 0, 0])[slot] if slot < 4 else 0
         if move_id == 0 or pp <= 0:
             continue
 
-        # In singles, target the opposing active by default.
+        # In singles --> target the opposing active by default
         if enemy_alive:
             actions.append((EXT_CTRL_ACTION_MOVE, slot, enemy_side))
 
-    # AI-only extras based on provided decision info.
+    # AI only extras based on provided decision info
     if side == AI_BATTLER_ID:
         for slot, item_id in enumerate(info.get("trainer_items", [])):
             if item_id != 0:
@@ -727,7 +757,7 @@ def generate_actions_for_side(info, state, side):
 
 
 def simulate_action_for_side(state, info, action, side):
-    """Apply one simplified action transition for the acting side."""
+    """Apply one simplified action transition for the acting side"""
     new_state = copy.deepcopy(state)
     act, idx, target = action
 
@@ -738,7 +768,7 @@ def simulate_action_for_side(state, info, action, side):
         if not _is_alive(attacker):
             return new_state
 
-        # Use requested target when valid, otherwise default to enemy active.
+        # Use requested target when valid --> otherwise default to enemy active
         defender_idx = target if 0 <= target < len(new_state["active"]) else enemy_side
         if not _is_alive(new_state["active"][defender_idx]):
             defender_idx = enemy_side
@@ -759,13 +789,12 @@ def simulate_action_for_side(state, info, action, side):
             new_state["last_move"] = move_id
 
     elif act == EXT_CTRL_ACTION_ITEM and side == AI_BATTLER_ID:
-        # Simplified healing-item simulation for search quality.
         ai = new_state["active"][AI_BATTLER_ID]
         if _is_alive(ai):
             ai["hp"] = min(ai["maxHp"], ai["hp"] + 40)
 
     elif act == EXT_CTRL_ACTION_SWITCH and side == AI_BATTLER_ID:
-        # Swap active AI mon with selected party slot.
+        # Swap active AI pokemon with selected party slot
         if 0 <= idx < len(new_state.get("party", [])):
             party_mon = new_state["party"][idx]
             if _is_alive(party_mon):
@@ -777,9 +806,9 @@ def simulate_action_for_side(state, info, action, side):
 
 
 def _alpha_beta(info, state, depth, side, alpha, beta):
-    ai_fainted = state["active"][AI_BATTLER_ID].get("hp", 0) <= 0
     player_fainted = state["active"][PLAYER_BATTLER_ID].get("hp", 0) <= 0
-    if depth == 0 or ai_fainted or player_fainted:
+
+    if depth == 0 or player_fainted:
         return evaluate_state(state), None
 
     actions = generate_actions_for_side(info, state, side)
@@ -825,122 +854,6 @@ def choose_action_alpha_beta(info, state, depth=3):
         float("-inf"),
         float("inf"),
     )
-    
-#def prompt_action(info):
-#
-#    """Display valid actions & sub-choices. Returns (action, index, target)."""
-#    valid_move_slots = [
-#        i for i, (mid, pp) in enumerate(info["moves"])
-#        if mid != 0 and pp > 0
-#    ]
-#    # Available trainer item slots (non-zero item IDs)
-#    valid_item_slots = [
-#        i for i, item_id in enumerate(info["trainer_items"])
-#        if item_id != 0
-#    ]
-#    has_moves    = len(valid_move_slots) > 0
-#    has_switches = info["num_switches"] > 0
-#    has_items    = len(valid_item_slots) > 0
-#
-#    # Build menu of top-level actions
-#    options = []
-#    if has_moves:
-#        options.append(EXT_CTRL_ACTION_MOVE)
-#    if has_items:
-#        options.append(EXT_CTRL_ACTION_ITEM)
-#    if has_switches:
-#        options.append(EXT_CTRL_ACTION_SWITCH)
-#
-#    #ava code
-#    
-#    #call minimax and evaluate function here to get best move, item, or switch choice
-#    #then return that choice instead of prompting the user
-#
-#    #end ava code
-#    # If nothing is available (shouldn't normally happen), default to Struggle
-#    if not options:
-#        print("  No valid actions available — forcing Move 0 (Struggle).")
-#        return (EXT_CTRL_ACTION_MOVE, 0, 0)
-#
-#    # If only switch is available (forced switch after faint), skip the menu
-#    if options == [EXT_CTRL_ACTION_SWITCH]:
-#        print("\n--- A Pokemon fainted! Choose a replacement ---")
-#        action = EXT_CTRL_ACTION_SWITCH
-#    else:
-#        print("\n--- Opponent is waiting for a decision ---")
-#        print("Available actions:")
-#        action_labels = {
-#            EXT_CTRL_ACTION_MOVE:   "Use Move",
-#            EXT_CTRL_ACTION_ITEM:   "Use Item",
-#            EXT_CTRL_ACTION_SWITCH: "Switch Pokemon",
-#        }
-#        for opt in options:
-#            print(f"  {opt}: {action_labels[opt]}")
-#
-#        action = None
-#        while action not in options:
-#            try:
-#                action = int(input(f"Select Action ({'/'.join(str(o) for o in options)}): "))
-#                if action not in options:
-#                    print(f"Invalid. Choose from: {options}")
-#            except ValueError:
-#                print("Invalid input.")
-#
-#    index = 0
-#    target = 0
-#
-#    if action == EXT_CTRL_ACTION_MOVE:
-#        print("Available moves:")
-#        for slot in valid_move_slots:
-#            mid, pp = info["moves"][slot]
-#            print(f"  {slot}: {move_name(mid)}  (PP: {pp})")
-#
-#        chosen = None
-#        while chosen not in valid_move_slots:
-#            try:
-#                chosen = int(input(f"Select Move Slot ({'/'.join(str(s) for s in valid_move_slots)}): "))
-#                if chosen not in valid_move_slots:
-#                    print(f"Invalid. Choose from: {valid_move_slots}")
-#            except ValueError:
-#                print("Invalid input.")
-#        index = chosen
-#        # Targeting: in double battles, single-target moves need a target prompt
-#        if info["is_double"] and info["move_targets"][chosen] == MOVE_TARGET_SELECTED:
-#            target = prompt_target(info)
-#        else:
-#            target = 0
-#
-#    elif action == EXT_CTRL_ACTION_ITEM:
-#        print("Available items:")
-#        for slot in valid_item_slots:
-#            print(f"  {slot}: {item_name(info['trainer_items'][slot])}")
-#
-#        chosen = None
-#        while chosen not in valid_item_slots:
-#            try:
-#                chosen = int(input(f"Select Item Slot ({'/'.join(str(s) for s in valid_item_slots)}): "))
-#                if chosen not in valid_item_slots:
-#                    print(f"Invalid. Choose from: {valid_item_slots}")
-#            except ValueError:
-#                print("Invalid input.")
-#        index = chosen
-#
-#    elif action == EXT_CTRL_ACTION_SWITCH:
-#        print("Available Pokemon to switch to:")
-#        for j, slot in enumerate(info["switch_slots"]):
-#            sp_id = info["switch_species"][j] if j < len(info["switch_species"]) else 0
-#            print(f"  {slot}: {species_name(sp_id)}")
-#        chosen = None
-#        while chosen not in info["switch_slots"]:
-#            try:
-#                chosen = int(input(f"Select Party Slot ({'/'.join(str(s) for s in info['switch_slots'])}): "))
-#                if chosen not in info["switch_slots"]:
-#                    print(f"Invalid. Choose from: {info['switch_slots']}")
-#            except ValueError:
-#                print("Invalid input.")
-#        index = chosen
-#
-#    return (action, index, target)
 
 def generate_actions(info):
     actions = []
