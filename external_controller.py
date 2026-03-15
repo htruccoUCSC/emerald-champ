@@ -4,6 +4,14 @@ import struct
 import sys
 import time
 import copy
+import re
+from dotenv import load_dotenv, dotenv_values
+load_dotenv()
+from google import genai
+from google.genai import types
+
+apiKey = os.getenv("API_KEY")
+client = genai.Client(api_key=apiKey)
 
 # Make paths robust so it can be run from root or external_ai dir
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -972,47 +980,171 @@ def evaluate(state):
     #print("opponent: ", opponent)
 
     if opponent["hp"] <= 0:
-        print("1")
+        #print("1")
         score -= 200
     elif opponent["maxHp"] > 0:
         #print("2")
         score += (1 - opponent["hp"] / opponent["maxHp"]) * 100
-        print("score after 2: ",score)
+        #print("score after 2: ",score)
     
     if player["hp"] <= 0:
-        print("3")
+        #print("3")
         score += 200
     elif player["maxHp"] > 0:
         #print("4")
         score += (player["hp"] / player["maxHp"]) * 50
-        print("score after 4: ", score)
-    print("lastmove: ", state["lastUsedMove"][1])
+        #print("score after 4: ", score)
+    #print("lastmove: ", state["lastUsedMove"][1])
     #print("state['last_move'] ", state["last_move"])
 
     last_real_move = state.get("lastUsedMove", [None, None])[1]
     simulated_move = state.get("last_move")
     #if state["lastUsedMove"][1] == state["last_move"]:
     if last_real_move == simulated_move:
-        print("did this work")
+        #print("did this work")
         score -= 20
 
-    print("score in evaluate: ", score)
+    #print("score in evaluate: ", score)
     return score
 
-def simulate(state, action):
+llm_cache = {}
+
+def matchup(attacker_type, defender):
+    multiplier = type_effectiveness(attacker_type, defender["type1"])
+
+    if defender["type2"] is not None:
+        multiplier *= type_effectiveness(attacker_type, defender["type2"])
+
+    return multiplier
+
+def format_switches(party):
+    switches = []
+    for mon in party:
+        if mon["hp"] <= 0 or mon["species"] == 0:
+            continue
+
+        switches.append(
+            f'{species_name(mon["species"])} '
+            f'(HP {mon["hp"]}/{mon["maxHp"]}, '
+            f'Types: {type_name(mon["type1"])}/{type_name(mon["type2"])}, '
+            f'Speed {mon["speed"]})'
+        )
+    return "\n".join(switches)
+
+def LLM_evaluate(state):
+    player = state["active"][0]
+    opponent = state["active"][1]
+    
+    key = f'{species_name(player["species"])}_{player["hp"]}_{species_name(opponent["species"])}_{opponent["hp"]}'
+
+    if key in llm_cache:
+        return llm_cache[key]
+
+    player_attack = max(
+        matchup(player["type1"], opponent),
+        matchup(player["type2"], opponent) if player["type2"] else 0
+    )
+
+    opponent_attack = max(
+        matchup(opponent["type1"], player),
+        matchup(opponent["type2"], player) if opponent["type2"] else 0
+    )
+
+    available_switches = [
+        mon for mon in state["party"]
+        if mon["hp"] > 0 and mon["species"] != 0
+    ]
+
+    prompt = f"""
+        You are trying to evaluate the current state of a Pokemon battle and find the
+        move that is most advantageous for the opponent which is the current AI we are training
+        Evaluate this Pokemon battle at the current state.
+
+        Player Pokemon: {species_name(player["species"])}
+        Player HP: {player["hp"]}/{player["maxHp"]}
+        Player types: {type_name(player["type1"])}, {type_name(player["type2"])}
+        Player Stats: Special Defense: {player["spDefense"]}, Special Attack: {player["spAttack"]}, Speed: {player["speed"]}, Defense: {player["defense"]}, Attack: {player["attack"]}
+        Player Ability: {player["ability"]}
+
+        Opponent Pokemon: {species_name(opponent["species"])}
+        Opponent HP: {opponent["hp"]}/{opponent["maxHp"]}
+        Opponent types: {type_name(opponent["type1"])}, {type_name(opponent["type2"])}
+        Opponent Stats: Special Defense: {opponent["spDefense"]}, Special Attack: {opponent["spAttack"]}, Speed: {opponent["speed"]}, Defense: {opponent["defense"]}, Attack: {opponent["attack"]}
+        Opponent Ability: {opponent["ability"]}
+
+        From the given information consider Pokemon type advantages heavily
+
+        Best player STAB effectiveness: {player_attack}x
+        Best opponent STAB effectiveness: {opponent_attack}x
+
+        Available switches: {format_switches(state["party"])}
+
+        Before evaluating, consider these factors:
+        - HP remaining for both player and opponent
+        - Speed advantage
+        - Type advantage
+        - Defensive matchups
+        - Ability effects
+
+        Score the position from 0 to 100:
+        100 = AI guarateed win
+        50 = equal
+        0 = AI guaranteed loss
+
+        Think silently and return only the score.
+        Return ONLY valid JSON. Do not include explanations, markdown, or extra text.
+        {{"score": number}}
+    """
+    #print(prompt)
+
+    response = call_llm(prompt)
+
+    response = re.sub(r"```json", "", response)
+    response = re.sub(r"```", "", response)
+    response = response.strip()
+
+    try:
+        match = re.search(r'\{.*?"score".*?\}', response, re.DOTALL)
+        if match:
+            data = json.loads(response)
+            score = float(data["score"])
+        else:
+            raise ValueError("No JSON found")
+    except Exception as e:
+        print("response parsing failed: ", response)
+        score = 50
+
+    llm_cache[key] = score
+    print(score)
+    return score
+
+def call_llm(prompt): 
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=types.Part.from_text(text=prompt),
+        config=types.GenerateContentConfig(
+            temperature=0, top_p=0.95, top_k=20
+        ),
+    )  
+    text = response.text
+    print("Text: ",text)
+    return text
+
+def simulate(state, action, ai_turn):
     new_state = copy.deepcopy(state)
     act, idx, target = action
     if act == EXT_CTRL_ACTION_MOVE:
-            print("action for move is chosen: ", act)
-            #attacker is always 1 (AI being controlled)
-            attacker = new_state["active"][1]
-            #defender is always target (or 0) bc that is player
-            defender = new_state["active"][target]
+            if ai_turn:
+                attacker = new_state["active"][1] #AI
+                defender = new_state["active"][0]
+            else:
+
+                attacker = new_state["active"][0] #Player
+                defender = new_state["active"][1]
 
             #AI is attacker,
             #Player is Defender
-            #print("defender: ", defender)
-            #print("attacker: ", attacker)
+
             #get each moveID from AI
             move_id = attacker["moves"][idx]
             #estimate how much that move will do against player
@@ -1020,18 +1152,18 @@ def simulate(state, action):
 
             defender["hp"] = max(0, defender["hp"] - damage)
             new_state["last_move"] = move_id
-            print("new_state['ya whatever tf']: ",new_state["last_move"] )
-            print("here is what defender hp is after dmg calc: ", defender["hp"])
+            #print("new_state['ya whatever tf']: ",new_state["last_move"] )
+            #print("here is what defender hp is after dmg calc: ", defender["hp"])
     return new_state
 
 def estimate_damage(attacker, defender, move_id):
-    print("move_id: ",move_id)
+    #print("move_id: ",move_id)
     mv = move_data(move_id)
 
     if not mv:
         return 0
     power = mv["power"]
-    print("power: ", power)
+    #print("power: ", power)
     if power == 0:
         return 0
     level = attacker["level"]
@@ -1044,58 +1176,63 @@ def estimate_damage(attacker, defender, move_id):
         defense = defender["spDefense"]
 
     damage = ((((2 * level + 10) / 250) * power * (attack / defense)) / 50) + 2
-    print("type, attacker type1, attacker type2: ", mv["type"], type_name(defender["type1"]), type_name(defender["type2"]))
+    #print("type, attacker type1, attacker type2: ", mv["type"], type_name(defender["type1"]), type_name(defender["type2"]))
     stab = 1
     #STAB damage
     if mv["type"] == type_name(attacker["type1"]) or mv["type"] == type_name(attacker["type2"]):
-        print("hello my damge is 1.5")
+        #print("hello my damge is 1.5")
         stab *= 1.5
-    #mv["type"] is all of AI move's types
-    #if mv["type"] == defender["type1"] ex: if ghost == ghost
-    #check type effectiveness
-    #update dmg according to type effectiveness
-    #if mv["type"] != defender["type1"] or type 2
-    #check type effectiveness
-    #update dmg according to type effectiveness
-
 
     multiplier = type_effectiveness(mv["type"], type_name(defender["type1"]))
-    print("Multiplier 1: ", multiplier)
+    #print("Multiplier 1: ", multiplier)
 
     if defender["type2"] != defender["type1"]:
-        print(mv["type"], type_name(defender["type2"]))
-        print("type_effectiveness", type_effectiveness(mv["type"], type_name(defender["type2"])))
+        #print(mv["type"], type_name(defender["type2"]))
+        #print("type_effectiveness", type_effectiveness(mv["type"], type_name(defender["type2"])))
         multiplier *= type_effectiveness(mv["type"], type_name(defender["type2"]))
-        print("Multiplier 2: ", multiplier)
+        #print("Multiplier 2: ", multiplier)
 
     #damage does not take into account the pokemon critical hits
     #or the randomness inputed
     damage = damage * stab * multiplier
     
-    print("here is was damage is after calculation: ", damage)
+    #print("here is was damage is after calculation: ", damage)
     return int(damage)
 
-def minimax(info, state, depth):
-    print("depth: ",depth)
+def minimax(info, state, depth, maximizing):
+    #print("depth: ",depth)
     if depth == 0:
-        return evaluate(state), None
+        return LLM_evaluate(state), None
+    if maximizing:
+        best_score = float("-inf")
+        best_action = None
 
-    best_score = float("-inf")
-    best_action = None
+        actions = generate_actions(info)
 
-    actions = generate_actions(info)
+        for action in actions:
+            print("action: ", action)
+            new_state = simulate(state, action, ai_turn=True)
 
-    for action in actions:
-        print("action: ", action)
-        new_state = simulate(state, action)
+            score, _ = minimax(info, new_state, depth - 1, False)
 
-        score, _ = minimax(info, new_state, depth - 1)
+            if score > best_score:
+                best_score = score
+                best_action = action
+        print("returning after maximizing: ",best_score, best_action)
+        return best_score, best_action
+    else:
+        best_score = float("inf")
+        actions = generate_actions(info)
 
-        if score > best_score:
-            best_score = score
-            best_action = action
-    print("score: ",best_score)
-    return best_score, best_action
+        for action in actions:
+            new_state = simulate(state, action, ai_turn=False)
+            
+            score, _ = minimax(info, new_state, depth-1, True)
+
+            if score < best_score:
+                best_score = score
+        print("returning after minimizing: ", best_score)
+        return best_score, None
 
 def main():
     print("Pokemon Emerald External AI Controller")
