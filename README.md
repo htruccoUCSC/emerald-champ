@@ -91,6 +91,16 @@ The Python script reads `pokeemerald.map` from the project root to locate `gExte
 
 ### 3. Run the Python script
 
+Create and activate a virtual environment, then install the required packages:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Make sure your `.env` file contains `API_KEY=...` before starting the controller.
+
 ```bash
 python external_controller.py
 ```

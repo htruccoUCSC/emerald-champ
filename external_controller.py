@@ -3,6 +3,15 @@ import json
 import struct
 import sys
 import time
+import copy
+import re
+from dotenv import load_dotenv
+load_dotenv()
+from google import genai
+from google.genai import types
+
+apiKey = os.getenv("API_KEY")
+client = genai.Client(api_key=apiKey)
 
 # Make paths robust so it can be run from root or external_ai dir
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +78,26 @@ TYPE_NAMES = {
     12: "Grass", 13: "Electric", 14: "Psychic", 15: "Ice",
     16: "Dragon", 17: "Dark", 255: "None",
 }
+#Ghost and Dark type moves were not very effective against Steel type Pokémon. in gen 3
+TYPE_CHART = {
+    "Water": {"Fire": 2, "Water": 0.5, "Electric": 1, "Grass": 0.5, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 2, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 2, "Ghost": 1, "Dragon": 0.5, "Dark": 1, "Steel": 1, "Normal": 1},
+    "Fire": {"Fire": 0.5, "Water": 0.5, "Electric": 1, "Grass": 2, "Ice": 2, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 2, "Rock": 0.5, "Ghost": 1, "Dragon": 0.5, "Dark": 1, "Steel": 2, "Normal": 1},
+    "Electric": {"Fire": 1, "Water": 2, "Electric": 0.5, "Grass": 0.5, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 0, "Flying": 2, "Psychic": 1, "Bug": 1, "Rock": 1, "Ghost": 1, "Dragon": 0.5, "Dark": 1, "Steel": 1, "Normal": 1},
+    "Grass": {"Fire": 0.5, "Water": 2, "Electric": 1, "Grass": 0.5, "Ice": 1, "Fighting": 1, "Poison": 0.5, "Ground": 2, "Flying": 0.5, "Psychic": 1, "Bug": 0.5, "Rock": 2, "Ghost": 1, "Dragon": 0.5, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Ice": {"Fire": 0.5, "Water": 0.5, "Electric": 1, "Grass": 2, "Ice": 0.5, "Fighting": 1, "Poison": 1, "Ground": 2, "Flying": 2, "Psychic": 1, "Bug": 1, "Rock": 1, "Ghost": 1, "Dragon": 2, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Fighting": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 2, "Fighting": 1, "Poison": 0.5, "Ground": 1, "Flying": 0.5, "Psychic": 0.5, "Bug": 0.5, "Rock": 2, "Ghost": 0, "Dragon": 1, "Dark": 2, "Steel": 2, "Normal": 2},
+    "Poison": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 2, "Ice": 1, "Fighting": 1, "Poison": 0.5, "Ground": 0.5, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 0.5, "Ghost": 0.5, "Dragon": 1, "Dark": 1, "Steel": 0, "Normal": 1},
+    "Ground": {"Fire": 2, "Water": 1, "Electric": 2, "Grass": 0.5, "Ice": 1, "Fighting": 1, "Poison": 2, "Ground": 1, "Flying": 0, "Psychic": 1, "Bug": 0.5, "Rock": 2, "Ghost": 1, "Dragon": 1, "Dark": 1, "Steel": 2, "Normal": 1},
+    "Flying": {"Fire": 1, "Water": 1, "Electric": 0.5, "Grass": 2, "Ice": 1, "Fighting": 2, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 2, "Rock": 0.5, "Ghost": 1, "Dragon": 1, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Psychic": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 2, "Poison": 2, "Ground": 1, "Flying": 1, "Psychic": 0.5, "Bug": 1, "Rock": 1, "Ghost": 1, "Dragon": 1, "Dark": 0, "Steel": 0.5, "Normal": 1},
+    "Bug": {"Fire": 0.5, "Water": 1, "Electric": 1, "Grass": 2, "Ice": 1, "Fighting": 0.5, "Poison": 0.5, "Ground": 1, "Flying": 0.5, "Psychic": 2, "Bug": 1, "Rock": 1, "Ghost": 0.5, "Dragon": 1, "Dark": 2, "Steel": 0.5, "Normal": 1},
+    "Rock": {"Fire": 2, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 2, "Fighting": 0.5, "Poison": 1, "Ground": 0.5, "Flying": 2, "Psychic": 1, "Bug": 2, "Rock": 1, "Ghost": 1, "Dragon": 1, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Ghost": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 2, "Bug": 1, "Rock": 1, "Ghost": 2, "Dragon": 1, "Dark": 0.5, "Steel": 0.5, "Normal": 0},
+    "Dragon": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 1, "Ghost": 1, "Dragon": 2, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Dark": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 0.5, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 2, "Bug": 1, "Rock": 1, "Ghost": 2, "Dragon": 1, "Dark": 0.5, "Steel": 0.5, "Normal": 1},
+    "Steel": {"Fire": 0.5, "Water": 0.5, "Electric": 0.5, "Grass": 1, "Ice": 2, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 2, "Ghost": 1, "Dragon": 1, "Dark": 1, "Steel": 0.5, "Normal": 1},
+    "Normal": {"Fire": 1, "Water": 1, "Electric": 1, "Grass": 1, "Ice": 1, "Fighting": 1, "Poison": 1, "Ground": 1, "Flying": 1, "Psychic": 1, "Bug": 1, "Rock": 0.5, "Ghost": 0, "Dragon": 1, "Dark": 1, "Steel": 0.5, "Normal": 1}
+}
 
 # Weather bits (from include/constants/battle.h)
 B_WEATHER_RAIN_TEMPORARY      = 1 << 0
@@ -91,25 +120,47 @@ STAT_STAGE_NAMES = ["HP", "Atk", "Def", "Spd", "SpAtk", "SpDef", "Acc", "Eva"]
 # ---------------------------------------------------------------------------
 # Name lookups (loaded from JSON files generated from source headers)
 # ---------------------------------------------------------------------------
-def load_lookup_names(lookup_path, fallback_zero_name):
+def load_lookup_names(lookup_path, fallback_zero_name=None):
     """Load {id: name} mapping from a JSON file with string/int keys."""
-    names = {0: fallback_zero_name}
+    data = {}
+    if fallback_zero_name is not None:
+        data[0] = {"name": fallback_zero_name}
+
     try:
         with open(lookup_path, "r", encoding="utf-8") as f:
             raw = json.load(f)
         for key, value in raw.items():
             try:
-                names[int(key)] = str(value)
+                idx = int(key)
+                if isinstance(value, str):
+                    data[idx] = {"name": value}
+                elif isinstance(value, dict):
+                    data[idx] = value
             except (TypeError, ValueError):
                 continue
     except FileNotFoundError:
-        print(
-            f"Warning: Could not find {lookup_path}. "
-            "Names will show as numeric IDs."
-        )
+        print(f"Warning: Could not find {lookup_path}")
     except (OSError, json.JSONDecodeError):
-        print(f"Warning: Failed to read {lookup_path}. Names will show as numeric IDs.")
-    return names
+        print(f"Warning: Failed to read {lookup_path}")
+    return data
+    
+    ###names = {0: fallback_zero_name}
+    ###try:
+    ###    with open(lookup_path, "r", encoding="utf-8") as f:
+    ###        raw = json.load(f)
+    ###    for key, value in raw.items():
+    ###        try:
+    ###            names[int(key)] = str(value)
+    ###        except (TypeError, ValueError):
+    ###            continue
+    ###except FileNotFoundError:
+    ###    print(
+    ###        f"Warning: Could not find {lookup_path}. "
+    ###        "Names will show as numeric IDs."
+    ###    )
+    ###except (OSError, json.JSONDecodeError):
+    ###    print(f"Warning: Failed to read {lookup_path}. Names will show as numeric IDs.")
+    ###return names
 
 
 MOVE_NAMES = load_lookup_names(MOVES_LOOKUP_FILE, "(None)")
@@ -120,8 +171,17 @@ ITEM_NAMES[0] = "(None)"
 
 
 def move_name(move_id):
-    return MOVE_NAMES.get(move_id, f"Move#{move_id}")
+    #return MOVE_NAMES.get(move_id, f"Move#{move_id}")
+    move = MOVE_NAMES.get(move_id)
+    if not move:
+        return str(move_id)
+    return move["name"]
 
+def move_data(move_id):
+    return MOVE_NAMES.get(move_id)
+
+def type_effectiveness(move_type, target_type):
+    return TYPE_CHART.get(move_type, {}).get(target_type, 1)
 
 def species_name(species_id):
     return SPECIES_NAMES.get(species_id, f"Species#{species_id}")
@@ -392,7 +452,7 @@ def display_battle_state(bs):
         types = type_name(a["type1"])
         if a["type2"] != a["type1"]:
             types += "/" + type_name(a["type2"])
-
+       
         print(f"  {slot_label} {species_name(a['species'])} Lv{a['level']}  "
               f"HP: {a['hp']}/{a['maxHp']}  {types}{status_display}")
         print(f"         Atk:{a['attack']} Def:{a['defense']} SpA:{a['spAttack']} "
@@ -568,114 +628,524 @@ def prompt_target(info):
 # Prompt the user with only valid choices
 # ---------------------------------------------------------------------------
 def prompt_action(info):
-    """Display valid actions & sub-choices. Returns (action, index, target)."""
+    state = info["battle_state"]
+
+    # Forced switch case --> if AI active pokemon is dead must switch
+    if state and state["active"][AI_BATTLER_ID].get("hp", 0) <= 0:
+        forced_switches = []
+        for slot in info.get("switch_slots", []):
+            if 0 <= slot < len(state.get("party", [])) and _is_alive(state["party"][slot]):
+                forced_switches.append(slot)
+
+        if forced_switches:
+            # Choose the healthiest available replacement
+            best_slot = max(
+                forced_switches,
+                key=lambda s: (
+                    state["party"][s]["hp"] / state["party"][s]["maxHp"]
+                    if state["party"][s].get("maxHp", 0) > 0
+                    else 0
+                ),
+            )
+            print(f"AI forced switch chose party slot: {best_slot}")
+            return (EXT_CTRL_ACTION_SWITCH, best_slot, 0)
+
+    score, best_action = choose_action_alpha_beta(info, state, depth=3)
+
+    if best_action:
+        action, index, target = best_action
+        state["previous_move"] = state["lastUsedMove"][1]
+        print(f"AI chose action: {action}, index: {index}, target: {target}")
+        return action, index, target
+
+    # Fallback if search returns no legal action --> prefers legal moves, then items, then switches
+    if state:
+        fallback_switches = []
+        for slot in info.get("switch_slots", []):
+            if 0 <= slot < len(state.get("party", [])) and _is_alive(state["party"][slot]):
+                fallback_switches.append(slot)
+        if fallback_switches:
+            return (EXT_CTRL_ACTION_SWITCH, fallback_switches[0], 0)
+
+    return (EXT_CTRL_ACTION_MOVE, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# Improved search (alpha-beta minimax)
+# ---------------------------------------------------------------------------
+# Change summary:
+# 1) Uses alternating turns (AI maximizes, player minimizes)
+# 2) Generates actions from the current simulated state, not just initial info
+# 3) Simulates move/item/switch for AI, and move for player
+# 4) Uses alpha-beta pruning to reduce explored branches
+AI_BATTLER_ID = 1
+PLAYER_BATTLER_ID = 0
+
+
+def _is_alive(mon):
+    return mon.get("species", 0) != 0 and mon.get("hp", 0) > 0
+
+
+def _get_enemy_side(side):
+    return PLAYER_BATTLER_ID if side == AI_BATTLER_ID else AI_BATTLER_ID
+
+
+def evaluate_state(state):
+    """Heuristic score where higher is better for AI (active battler index 1)."""
+    ai = state["active"][AI_BATTLER_ID]
+    player = state["active"][PLAYER_BATTLER_ID]
+
+    ai_hp_ratio = (ai["hp"] / ai["maxHp"]) if ai.get("maxHp", 0) > 0 else 0
+    player_hp_ratio = (player["hp"] / player["maxHp"]) if player.get("maxHp", 0) > 0 else 0
+
+    # Reward lowering player HP and preserving AI HP
+    score = (1.0 - player_hp_ratio) * 140.0
+    score -= (1.0 - ai_hp_ratio) * 120.0
+
+    # Strong terminal incentives
+    if player.get("hp", 0) <= 0:
+        score += 1000
+    if ai.get("hp", 0) <= 0:
+        score -= 1000
+
+    # Small repeat move penalty to reduce loops
+    if state.get("last_move") == state.get("lastUsedMove", [None, None])[AI_BATTLER_ID]:
+        score -= 10
+
+    return score
+
+
+def generate_actions_for_side(info, state, side):
+    """Generate legal-ish actions for the acting side from the current state"""
+    actions = []
+    actor = state["active"][side]
+
+    # If AI active pokemon has fainted --> switch
+    if not _is_alive(actor):
+        if side == AI_BATTLER_ID:
+            for slot in info.get("switch_slots", []):
+                if 0 <= slot < len(state.get("party", [])) and _is_alive(state["party"][slot]):
+                    actions.append((EXT_CTRL_ACTION_SWITCH, slot, 0))
+        return actions
+
+    enemy_side = _get_enemy_side(side)
+    enemy_alive = _is_alive(state["active"][enemy_side])
+
+    # Moves from simulated state (keeps PP and move list up to date)
+    for slot, move_id in enumerate(actor.get("moves", [])):
+        pp = actor.get("pp", [0, 0, 0, 0])[slot] if slot < 4 else 0
+        if move_id == 0 or pp <= 0:
+            continue
+
+        # In singles --> target the opposing active by default
+        if enemy_alive:
+            actions.append((EXT_CTRL_ACTION_MOVE, slot, enemy_side))
+
+    # AI only extras based on provided decision info
+    if side == AI_BATTLER_ID:
+        for slot, item_id in enumerate(info.get("trainer_items", [])):
+            if item_id != 0:
+                actions.append((EXT_CTRL_ACTION_ITEM, slot, 0))
+
+        for slot in info.get("switch_slots", []):
+            if 0 <= slot < len(state.get("party", [])):
+                party_mon = state["party"][slot]
+                if _is_alive(party_mon):
+                    actions.append((EXT_CTRL_ACTION_SWITCH, slot, 0))
+
+    return actions
+
+
+def simulate_action_for_side(state, info, action, side):
+    """Apply one simplified action transition for the acting side"""
+    new_state = copy.deepcopy(state)
+    act, idx, target = action
+
+    if act == EXT_CTRL_ACTION_MOVE:
+        attacker = new_state["active"][side]
+        enemy_side = _get_enemy_side(side)
+
+        if not _is_alive(attacker):
+            return new_state
+
+        # Use requested target when valid --> otherwise default to enemy active
+        defender_idx = target if 0 <= target < len(new_state["active"]) else enemy_side
+        if not _is_alive(new_state["active"][defender_idx]):
+            defender_idx = enemy_side
+        defender = new_state["active"][defender_idx]
+
+        if idx < 0 or idx >= 4:
+            return new_state
+
+        move_id = attacker["moves"][idx]
+        if move_id == 0 or attacker["pp"][idx] <= 0:
+            return new_state
+
+        damage = estimate_damage(attacker, defender, move_id)
+        defender["hp"] = max(0, defender["hp"] - damage)
+        attacker["pp"][idx] = max(0, attacker["pp"][idx] - 1)
+
+        if side == AI_BATTLER_ID:
+            new_state["last_move"] = move_id
+
+    elif act == EXT_CTRL_ACTION_ITEM and side == AI_BATTLER_ID:
+        ai = new_state["active"][AI_BATTLER_ID]
+        if _is_alive(ai):
+            ai["hp"] = min(ai["maxHp"], ai["hp"] + 40)
+
+    elif act == EXT_CTRL_ACTION_SWITCH and side == AI_BATTLER_ID:
+        # Swap active AI pokemon with selected party slot
+        if 0 <= idx < len(new_state.get("party", [])):
+            party_mon = new_state["party"][idx]
+            if _is_alive(party_mon):
+                old_active = new_state["active"][AI_BATTLER_ID]
+                new_state["active"][AI_BATTLER_ID] = party_mon
+                new_state["party"][idx] = old_active
+
+    return new_state
+
+
+def _alpha_beta(info, state, depth, side, alpha, beta):
+    player_fainted = state["active"][PLAYER_BATTLER_ID].get("hp", 0) <= 0
+
+    if depth == 0 or player_fainted:
+        return evaluate_state(state), None
+
+    actions = generate_actions_for_side(info, state, side)
+    if not actions:
+        return evaluate_state(state), None
+
+    next_side = _get_enemy_side(side)
+
+    if side == AI_BATTLER_ID:
+        best_score = float("-inf")
+        best_action = None
+        for action in actions:
+            new_state = simulate_action_for_side(state, info, action, side)
+            score, _ = _alpha_beta(info, new_state, depth - 1, next_side, alpha, beta)
+            if score > best_score:
+                best_score = score
+                best_action = action
+            alpha = max(alpha, best_score)
+            if beta <= alpha:
+                break
+        return best_score, best_action
+
+    best_score = float("inf")
+    best_action = None
+    for action in actions:
+        new_state = simulate_action_for_side(state, info, action, side)
+        score, _ = _alpha_beta(info, new_state, depth - 1, next_side, alpha, beta)
+        if score < best_score:
+            best_score = score
+            best_action = action
+        beta = min(beta, best_score)
+        if beta <= alpha:
+            break
+    return best_score, best_action
+
+
+def choose_action_alpha_beta(info, state, depth=3):
+    return _alpha_beta(
+        info,
+        state,
+        depth,
+        AI_BATTLER_ID,
+        float("-inf"),
+        float("inf"),
+    )
+
+def generate_actions(info):
+    actions = []
     valid_move_slots = [
         i for i, (mid, pp) in enumerate(info["moves"])
         if mid != 0 and pp > 0
     ]
-    # Available trainer item slots (non-zero item IDs)
     valid_item_slots = [
-        i for i, item_id in enumerate(info["trainer_items"])
-        if item_id != 0
+        i for i, item in enumerate(info["trainer_items"])
+        if item != 0
     ]
-    has_moves    = len(valid_move_slots) > 0
-    has_switches = info["num_switches"] > 0
-    has_items    = len(valid_item_slots) > 0
 
-    # Build menu of top-level actions
-    options = []
-    if has_moves:
-        options.append(EXT_CTRL_ACTION_MOVE)
-    if has_items:
-        options.append(EXT_CTRL_ACTION_ITEM)
-    if has_switches:
-        options.append(EXT_CTRL_ACTION_SWITCH)
-
-    # If nothing is available (shouldn't normally happen), default to Struggle
-    if not options:
-        print("  No valid actions available — forcing Move 0 (Struggle).")
-        return (EXT_CTRL_ACTION_MOVE, 0, 0)
-
-    # If only switch is available (forced switch after faint), skip the menu
-    if options == [EXT_CTRL_ACTION_SWITCH]:
-        print("\n--- A Pokemon fainted! Choose a replacement ---")
-        action = EXT_CTRL_ACTION_SWITCH
-    else:
-        print("\n--- Opponent is waiting for a decision ---")
-        print("Available actions:")
-        action_labels = {
-            EXT_CTRL_ACTION_MOVE:   "Use Move",
-            EXT_CTRL_ACTION_ITEM:   "Use Item",
-            EXT_CTRL_ACTION_SWITCH: "Switch Pokemon",
-        }
-        for opt in options:
-            print(f"  {opt}: {action_labels[opt]}")
-
-        action = None
-        while action not in options:
-            try:
-                action = int(input(f"Select Action ({'/'.join(str(o) for o in options)}): "))
-                if action not in options:
-                    print(f"Invalid. Choose from: {options}")
-            except ValueError:
-                print("Invalid input.")
-
-    index = 0
-    target = 0
-
-    if action == EXT_CTRL_ACTION_MOVE:
-        print("Available moves:")
-        for slot in valid_move_slots:
-            mid, pp = info["moves"][slot]
-            print(f"  {slot}: {move_name(mid)}  (PP: {pp})")
-
-        chosen = None
-        while chosen not in valid_move_slots:
-            try:
-                chosen = int(input(f"Select Move Slot ({'/'.join(str(s) for s in valid_move_slots)}): "))
-                if chosen not in valid_move_slots:
-                    print(f"Invalid. Choose from: {valid_move_slots}")
-            except ValueError:
-                print("Invalid input.")
-        index = chosen
-        # Targeting: in double battles, single-target moves need a target prompt
-        if info["is_double"] and info["move_targets"][chosen] == MOVE_TARGET_SELECTED:
-            target = prompt_target(info)
+    for slot in valid_move_slots:
+        if info["is_double"] and info["move_targets"][slot] == MOVE_TARGET_SELECTED:
+            for t in get_valid_targets(info):
+                actions.append((EXT_CTRL_ACTION_MOVE, slot, t))
         else:
-            target = 0
+            actions.append((EXT_CTRL_ACTION_MOVE, slot, 0))
 
-    elif action == EXT_CTRL_ACTION_ITEM:
-        print("Available items:")
-        for slot in valid_item_slots:
-            print(f"  {slot}: {item_name(info['trainer_items'][slot])}")
+    for slot in valid_item_slots:
+        actions.append((EXT_CTRL_ACTION_ITEM, slot, 0))
 
-        chosen = None
-        while chosen not in valid_item_slots:
-            try:
-                chosen = int(input(f"Select Item Slot ({'/'.join(str(s) for s in valid_item_slots)}): "))
-                if chosen not in valid_item_slots:
-                    print(f"Invalid. Choose from: {valid_item_slots}")
-            except ValueError:
-                print("Invalid input.")
-        index = chosen
+    for slot in info["switch_slots"]:
+        actions.append((EXT_CTRL_ACTION_SWITCH, slot, 0))
 
-    elif action == EXT_CTRL_ACTION_SWITCH:
-        print("Available Pokemon to switch to:")
-        for j, slot in enumerate(info["switch_slots"]):
-            sp_id = info["switch_species"][j] if j < len(info["switch_species"]) else 0
-            print(f"  {slot}: {species_name(sp_id)}")
-        chosen = None
-        while chosen not in info["switch_slots"]:
-            try:
-                chosen = int(input(f"Select Party Slot ({'/'.join(str(s) for s in info['switch_slots'])}): "))
-                if chosen not in info["switch_slots"]:
-                    print(f"Invalid. Choose from: {info['switch_slots']}")
-            except ValueError:
-                print("Invalid input.")
-        index = chosen
+    return actions
 
-    return (action, index, target)
+def evaluate(state):
+    score = 0
 
+    player = state["active"][0]
+    #oponent is AI
+    opponent = state["active"][1]
+
+    #these are currently correct
+    #print("player: ", player)
+    #print("opponent: ", opponent)
+
+    if opponent["hp"] <= 0:
+        #print("1")
+        score -= 200
+    elif opponent["maxHp"] > 0:
+        #print("2")
+        score += (1 - opponent["hp"] / opponent["maxHp"]) * 100
+        #print("score after 2: ",score)
+    
+    if player["hp"] <= 0:
+        #print("3")
+        score += 200
+    elif player["maxHp"] > 0:
+        #print("4")
+        score += (player["hp"] / player["maxHp"]) * 50
+        #print("score after 4: ", score)
+    #print("lastmove: ", state["lastUsedMove"][1])
+    #print("state['last_move'] ", state["last_move"])
+
+    last_real_move = state.get("lastUsedMove", [None, None])[1]
+    simulated_move = state.get("last_move")
+    #if state["lastUsedMove"][1] == state["last_move"]:
+    if last_real_move == simulated_move:
+        #print("did this work")
+        score -= 20
+
+    #print("score in evaluate: ", score)
+    return score
+
+llm_cache = {}
+
+def matchup(attacker_type, defender):
+    multiplier = type_effectiveness(attacker_type, defender["type1"])
+
+    if defender["type2"] is not None:
+        multiplier *= type_effectiveness(attacker_type, defender["type2"])
+
+    return multiplier
+
+def format_switches(party):
+    switches = []
+    for mon in party:
+        if mon["hp"] <= 0 or mon["species"] == 0:
+            continue
+
+        switches.append(
+            f'{species_name(mon["species"])} '
+            f'(HP {mon["hp"]}/{mon["maxHp"]}, '
+            f'Types: {type_name(mon["type1"])}/{type_name(mon["type2"])}, '
+            f'Speed {mon["speed"]})'
+        )
+    return "\n".join(switches)
+
+def LLM_evaluate(state):
+    player = state["active"][0]
+    opponent = state["active"][1]
+    
+    key = f'{species_name(player["species"])}_{player["hp"]}_{species_name(opponent["species"])}_{opponent["hp"]}'
+
+    if key in llm_cache:
+        return llm_cache[key]
+
+    player_attack = max(
+        matchup(player["type1"], opponent),
+        matchup(player["type2"], opponent) if player["type2"] else 0
+    )
+
+    opponent_attack = max(
+        matchup(opponent["type1"], player),
+        matchup(opponent["type2"], player) if opponent["type2"] else 0
+    )
+
+    available_switches = [
+        mon for mon in state["party"]
+        if mon["hp"] > 0 and mon["species"] != 0
+    ]
+
+    prompt = f"""
+        You are trying to evaluate the current state of a Pokemon battle and find the
+        move that is most advantageous for the opponent which is the current AI we are training
+        Evaluate this Pokemon battle at the current state.
+
+        Player Pokemon: {species_name(player["species"])}
+        Player HP: {player["hp"]}/{player["maxHp"]}
+        Player types: {type_name(player["type1"])}, {type_name(player["type2"])}
+        Player Stats: Special Defense: {player["spDefense"]}, Special Attack: {player["spAttack"]}, Speed: {player["speed"]}, Defense: {player["defense"]}, Attack: {player["attack"]}
+        Player Ability: {player["ability"]}
+
+        Opponent Pokemon: {species_name(opponent["species"])}
+        Opponent HP: {opponent["hp"]}/{opponent["maxHp"]}
+        Opponent types: {type_name(opponent["type1"])}, {type_name(opponent["type2"])}
+        Opponent Stats: Special Defense: {opponent["spDefense"]}, Special Attack: {opponent["spAttack"]}, Speed: {opponent["speed"]}, Defense: {opponent["defense"]}, Attack: {opponent["attack"]}
+        Opponent Ability: {opponent["ability"]}
+
+        From the given information consider Pokemon type advantages heavily
+
+        Best player STAB effectiveness: {player_attack}x
+        Best opponent STAB effectiveness: {opponent_attack}x
+
+        Available switches: {format_switches(state["party"])}
+
+        Before evaluating, consider these factors:
+        - HP remaining for both player and opponent
+        - Speed advantage
+        - Type advantage
+        - Defensive matchups
+        - Ability effects
+
+        Score the position from 0 to 100:
+        100 = AI guarateed win
+        50 = equal
+        0 = AI guaranteed loss
+
+        Think silently and return only the score.
+        Return ONLY valid JSON. Do not include explanations, markdown, or extra text.
+        {{"score": number}}
+    """
+    #print(prompt)
+
+    response = call_llm(prompt)
+
+    response = re.sub(r"```json", "", response)
+    response = re.sub(r"```", "", response)
+    response = response.strip()
+
+    try:
+        match = re.search(r'\{.*?"score".*?\}', response, re.DOTALL)
+        if match:
+            data = json.loads(response)
+            score = float(data["score"])
+        else:
+            raise ValueError("No JSON found")
+    except Exception as e:
+        print("response parsing failed: ", response)
+        score = 50
+
+    llm_cache[key] = score
+    print(score)
+    return score
+
+def call_llm(prompt): 
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=types.Part.from_text(text=prompt),
+        config=types.GenerateContentConfig(
+            temperature=0, top_p=0.95, top_k=20
+        ),
+    )  
+    text = response.text
+    print("Text: ",text)
+    return text
+
+def simulate(state, action, ai_turn):
+    new_state = copy.deepcopy(state)
+    act, idx, target = action
+    if act == EXT_CTRL_ACTION_MOVE:
+            if ai_turn:
+                attacker = new_state["active"][1] #AI
+                defender = new_state["active"][0]
+            else:
+
+                attacker = new_state["active"][0] #Player
+                defender = new_state["active"][1]
+
+            #AI is attacker,
+            #Player is Defender
+
+            #get each moveID from AI
+            move_id = attacker["moves"][idx]
+            #estimate how much that move will do against player
+            damage = estimate_damage(attacker, defender, move_id)
+
+            defender["hp"] = max(0, defender["hp"] - damage)
+            new_state["last_move"] = move_id
+            #print("new_state['ya whatever tf']: ",new_state["last_move"] )
+            #print("here is what defender hp is after dmg calc: ", defender["hp"])
+    return new_state
+
+def estimate_damage(attacker, defender, move_id):
+    #print("move_id: ",move_id)
+    mv = move_data(move_id)
+
+    if not mv:
+        return 0
+    power = mv["power"]
+    #print("power: ", power)
+    if power == 0:
+        return 0
+    level = attacker["level"]
+
+    if mv["category"] == "physical":
+        attack = attacker["attack"]
+        defense = defender["defense"]
+    else:
+        attack = attacker["spAttack"]
+        defense = defender["spDefense"]
+
+    damage = ((((2 * level + 10) / 250) * power * (attack / defense)) / 50) + 2
+    #print("type, attacker type1, attacker type2: ", mv["type"], type_name(defender["type1"]), type_name(defender["type2"]))
+    stab = 1
+    #STAB damage
+    if mv["type"] == type_name(attacker["type1"]) or mv["type"] == type_name(attacker["type2"]):
+        #print("hello my damge is 1.5")
+        stab *= 1.5
+
+    multiplier = type_effectiveness(mv["type"], type_name(defender["type1"]))
+    #print("Multiplier 1: ", multiplier)
+
+    if defender["type2"] != defender["type1"]:
+        #print(mv["type"], type_name(defender["type2"]))
+        #print("type_effectiveness", type_effectiveness(mv["type"], type_name(defender["type2"])))
+        multiplier *= type_effectiveness(mv["type"], type_name(defender["type2"]))
+        #print("Multiplier 2: ", multiplier)
+
+    #damage does not take into account the pokemon critical hits
+    #or the randomness inputed
+    damage = damage * stab * multiplier
+    
+    #print("here is was damage is after calculation: ", damage)
+    return int(damage)
+
+def minimax(info, state, depth, maximizing):
+    #print("depth: ",depth)
+    if depth == 0:
+        return LLM_evaluate(state), None
+    if maximizing:
+        best_score = float("-inf")
+        best_action = None
+
+        actions = generate_actions(info)
+
+        for action in actions:
+            print("action: ", action)
+            new_state = simulate(state, action, ai_turn=True)
+
+            score, _ = minimax(info, new_state, depth - 1, False)
+
+            if score > best_score:
+                best_score = score
+                best_action = action
+        print("returning after maximizing: ",best_score, best_action)
+        return best_score, best_action
+    else:
+        best_score = float("inf")
+        actions = generate_actions(info)
+
+        for action in actions:
+            new_state = simulate(state, action, ai_turn=False)
+            
+            score, _ = minimax(info, new_state, depth-1, True)
+
+            if score < best_score:
+                best_score = score
+        print("returning after minimizing: ", best_score)
+        return best_score, None
 
 def main():
     print("Pokemon Emerald External AI Controller")
